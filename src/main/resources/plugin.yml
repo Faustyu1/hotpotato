@@ -1,0 +1,15 @@
+name: HotPotato
+version: 1.0
+main: io.github.faustyu.hotpotato.HotPotato
+api-version: '1.21'
+author: Faustyu
+description: Hot Potato mini-game plugin for Minecraft
+commands:
+  hotpotato:
+    description: Commands for Hot Potato game
+    usage: /hotpotato <start|stop|setstart|setdeath>
+    permission: hotpotato.command
+permissions:
+  hotpotato.command:
+    description: Allows using hot potato commands
+    default: op

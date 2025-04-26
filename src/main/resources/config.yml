@@ -1,0 +1,32 @@
+# Настройки плагина HotPotato
+settings:
+  initial-timer: 30  # Начальное время таймера в секундах
+  timer-decrement: 0.5  # На сколько уменьшается таймер каждый раунд (в секундах)
+  min-timer: 5  # Минимальное значение таймера
+  nearby-range: 5.0  # Радиус, в котором игроки тоже проигрывают при взрыве
+
+# Локации для игры
+locations:
+  start:
+    world: world
+    x: 0
+    y: 64
+    z: 0
+    yaw: 0
+    pitch: 0
+  death:
+    world: world
+    x: 0
+    y: 64
+    z: 0
+    yaw: 0
+    pitch: 0
+
+# Сообщения
+messages:
+  game-start: "&aИгра 'Горячая картошка' началась!"
+  round-start: "&eРаунд %round% начался! У %player% горячая картошка!"
+  timer-update: "&eОсталось: %seconds% секунд"
+  player-eliminated: "&c%player% взорвался с горячей картошкой!"
+  nearby-eliminated: "&e%player% был слишком близко к взрыву картошки!"
+  winner: "&6⭐ ПОБЕДИТЕЛЬ! ⭐\n&6➤ &a%player% &6выиграл игру 'Горячая картошка'!\n&6➤ Выжил последним из %total% игроков!"

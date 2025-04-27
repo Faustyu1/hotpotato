@@ -13,6 +13,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
+import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.FireworkMeta;
 import org.bukkit.inventory.meta.ItemMeta;
@@ -22,6 +23,7 @@ import org.bukkit.scoreboard.Scoreboard;
 import org.bukkit.scoreboard.Team;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
+import org.bukkit.Sound;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -39,6 +41,9 @@ public class HotPotato extends JavaPlugin implements Listener {
     private int roundCount = 0;
     private double timerDecrement = 0.5; // Уменьшение таймера на 0.5 секунды с каждым раундом
     private List<Player> initialPlayers = new ArrayList<>();
+    private List<Player> survivingPlayers = new ArrayList<>();
+    private int initialPlayerCount;
+    private Player winner;
 
     private Scoreboard scoreboard;
     private Team potatoHolderTeam;
@@ -183,18 +188,36 @@ public class HotPotato extends JavaPlugin implements Listener {
 
         // Сохраняем изначальное количество игроков
         initialPlayers = new ArrayList<>(players);
+        survivingPlayers = new ArrayList<>(players);
 
         // Телепортировать всех игроков на стартовую позицию
         for (Player player : players) {
+            // Очищаем инвентарь перед началом игры
+            player.getInventory().clear();
+            
             player.teleport(gameStartLocation);
             player.setGameMode(GameMode.ADVENTURE);
             player.setGlowing(false);
+            
+            // Устанавливаем максимальное здоровье и сытость
             player.setHealth(20.0);
             player.setFoodLevel(20);
+            player.setSaturation(20.0f);
+            
+            // Добавляем эффекты
             player.addPotionEffect(new PotionEffect(PotionEffectType.NIGHT_VISION, Integer.MAX_VALUE, 0, false, false));
+            player.addPotionEffect(new PotionEffect(PotionEffectType.SATURATION, Integer.MAX_VALUE, 0, false, false));
+            player.addPotionEffect(new PotionEffect(PotionEffectType.REGENERATION, Integer.MAX_VALUE, 0, false, false));
+            
+            // Отключаем PvP
+            player.setNoDamageTicks(Integer.MAX_VALUE);
+            
             player.setScoreboard(scoreboard);
             survivingPlayersTeam.addEntry(player.getName());
         }
+
+        // Отключаем PvP для всех игроков
+        Bukkit.getWorlds().forEach(world -> world.setPVP(false));
 
         gameActive = true;
         roundCount = 0;
@@ -234,6 +257,12 @@ public class HotPotato extends JavaPlugin implements Listener {
     }
 
     private void startRound() {
+        // Отменить предыдущий таймер, если он существует
+        if (timerTaskId != -1) {
+            Bukkit.getScheduler().cancelTask(timerTaskId);
+            timerTaskId = -1;
+        }
+
         List<Player> activePlayers = getSurvivingPlayers();
         roundCount++;
 
@@ -251,37 +280,43 @@ public class HotPotato extends JavaPlugin implements Listener {
         setGlowingEffect(currentPotatoHolder);
 
         // Запустить таймер
-        timerTaskId = new BukkitRunnable() {
-            @Override
-            public void run() {
-                if (secondsLeft <= 0) {
-                    endRound();
-                } else {
-                    // Обновить title для всех игроков
-                    for (Player player : Bukkit.getOnlinePlayers()) {
-                        if (player.equals(currentPotatoHolder)) {
-                            player.sendTitle(
-                                    ChatColor.RED + "У ВАС ГОРЯЧАЯ КАРТОШКА!",
-                                    ChatColor.YELLOW + "Осталось: " + secondsLeft + " сек",
-                                    5, 10, 5
-                            );
-                        } else {
-                            player.sendTitle(
-                                    ChatColor.GREEN + "Горячая картошка у: " + currentPotatoHolder.getName(),
-                                    ChatColor.YELLOW + "Осталось: " + secondsLeft + " сек",
-                                    5, 10, 5
-                            );
-                        }
-                    }
-                    secondsLeft--;
-                }
-            }
-        }.runTaskTimer(this, 0L, 20L).getTaskId();
+        startTimer();
 
         Bukkit.broadcastMessage(ChatColor.GREEN + "Раунд " + roundCount + " начался! У " +
                 currentPotatoHolder.getName() + " горячая картошка!");
         Bukkit.broadcastMessage(ChatColor.YELLOW + "Время таймера: " + secondsLeft + " секунд");
         Bukkit.broadcastMessage(ChatColor.YELLOW + "Осталось игроков: " + activePlayers.size() + "/" + initialPlayers.size());
+    }
+
+    private void startTimer() {
+        if (timerTaskId != -1) {
+            Bukkit.getScheduler().cancelTask(timerTaskId);
+        }
+
+        timerTaskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(this, new Runnable() {
+            @Override
+            public void run() {
+                if (!gameActive || currentPotatoHolder == null) {
+                    return;
+                }
+
+                secondsLeft--;
+                
+                // Обновляем action bar для всех игроков
+                for (Player player : Bukkit.getOnlinePlayers()) {
+                    if (player.getGameMode() != GameMode.SPECTATOR) {
+                        String message = ChatColor.YELLOW + "Картошка у " + currentPotatoHolder.getName() + 
+                                       ChatColor.RED + " | " + ChatColor.YELLOW + "Осталось: " + secondsLeft + " сек";
+                        player.spigot().sendMessage(net.md_5.bungee.api.ChatMessageType.ACTION_BAR, 
+                            net.md_5.bungee.api.chat.TextComponent.fromLegacyText(message));
+                    }
+                }
+
+                if (secondsLeft <= 0) {
+                    endRound();
+                }
+            }
+        }, 0L, 20L);
     }
 
     // Устанавливаем эффект свечения для игрока с картошкой
@@ -296,6 +331,14 @@ public class HotPotato extends JavaPlugin implements Listener {
             p.setGlowing(false);
         }
 
+        // Добавляем всех выживших в команду выживших
+        for (Player p : getSurvivingPlayers()) {
+            if (!p.equals(player)) { // Не добавляем текущего держателя картошки
+                survivingPlayersTeam.addEntry(p.getName());
+                p.setGlowing(true);
+            }
+        }
+
         // Добавляем игрока с картошкой в команду и включаем свечение
         potatoHolderTeam.addEntry(player.getName());
         player.setGlowing(true);
@@ -306,36 +349,41 @@ public class HotPotato extends JavaPlugin implements Listener {
             return;
         }
 
-        // Отменить таймер
-        if (timerTaskId != -1) {
-            Bukkit.getScheduler().cancelTask(timerTaskId);
-            timerTaskId = -1;
-        }
-
-        // Удалить картошку у текущего держателя
-        if (currentPotatoHolder != null) {
-            removePotato(currentPotatoHolder);
-        }
-
-        // Очищаем команды
-        for (String entry : potatoHolderTeam.getEntries()) {
-            potatoHolderTeam.removeEntry(entry);
-        }
-        for (String entry : survivingPlayersTeam.getEntries()) {
-            survivingPlayersTeam.removeEntry(entry);
-        }
-
-        // Сбрасываем эффекты у всех игроков
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            player.setGlowing(false);
-            player.removePotionEffect(PotionEffectType.NIGHT_VISION);
-            player.setGameMode(GameMode.SURVIVAL);
-        }
-
         gameActive = false;
         currentPotatoHolder = null;
-        initialPlayers.clear();
-        Bukkit.broadcastMessage(ChatColor.RED + "Игра 'Горячая картошка' остановлена!");
+        roundCount = 0;
+
+        // Возвращаем всех игроков в режим выживания
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            player.setGameMode(GameMode.SURVIVAL);
+            player.getInventory().clear();
+            player.removePotionEffect(PotionEffectType.SPEED);
+            player.removePotionEffect(PotionEffectType.JUMP_BOOST);
+        }
+
+        // Воспроизводим звук победы
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            player.playSound(player.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1.0f, 1.0f);
+        }
+
+        // Проверяем, есть ли победитель
+        if (winner != null) {
+            Bukkit.broadcastMessage(ChatColor.GOLD + "═══════════════════════════════════");
+            Bukkit.broadcastMessage(ChatColor.YELLOW + "      ⭐ ПОБЕДИТЕЛЬ! ⭐");
+            Bukkit.broadcastMessage(ChatColor.GOLD + "➤ " + ChatColor.YELLOW + winner.getName() + 
+                ChatColor.GOLD + " выиграл игру 'Горячая картошка'!");
+            Bukkit.broadcastMessage(ChatColor.GOLD + "➤ Выжил последним из " + 
+                ChatColor.YELLOW + initialPlayerCount + ChatColor.GOLD + " игроков!");
+            Bukkit.broadcastMessage(ChatColor.GOLD + "═══════════════════════════════════");
+        } else {
+            Bukkit.broadcastMessage(ChatColor.GOLD + "═══════════════════════════════════");
+            Bukkit.broadcastMessage(ChatColor.YELLOW + "      ⭐ ИГРА ОСТАНОВЛЕНА! ⭐");
+            Bukkit.broadcastMessage(ChatColor.GOLD + "═══════════════════════════════════");
+        }
+
+        // Очищаем списки
+        survivingPlayers.clear();
+        winner = null;
     }
 
     private void endRound() {
@@ -343,112 +391,102 @@ public class HotPotato extends JavaPlugin implements Listener {
             return;
         }
 
-        Bukkit.broadcastMessage(ChatColor.RED + "Время вышло! " + currentPotatoHolder.getName() +
-                " взорвался с горячей картошкой!");
+        // Отменить таймер
+        if (timerTaskId != -1) {
+            Bukkit.getScheduler().cancelTask(timerTaskId);
+            timerTaskId = -1;
+        }
 
-        // Взрыв (только визуальный эффект)
+        // Воспроизводим звук TNT
+        currentPotatoHolder.getWorld().playSound(currentPotatoHolder.getLocation(), 
+            Sound.ENTITY_TNT_PRIMED, 1.0f, 1.0f);
+        
+        // Создаем взрыв без урона и отбрасывания
         currentPotatoHolder.getWorld().createExplosion(
-                currentPotatoHolder.getLocation(),
-                0.0F,
-                false,
-                false
+            currentPotatoHolder.getLocation(), 
+            4.0f,
+            false,
+            false,
+            null
         );
 
-        // Отключаем свечение для проигравшего
-        currentPotatoHolder.setGlowing(false);
-        if (potatoHolderTeam.hasEntry(currentPotatoHolder.getName())) {
-            potatoHolderTeam.removeEntry(currentPotatoHolder.getName());
-        }
-        if (survivingPlayersTeam.hasEntry(currentPotatoHolder.getName())) {
-            survivingPlayersTeam.removeEntry(currentPotatoHolder.getName());
-        }
-
-        // Перевести проигравшего в спектатор и телепортировать на локацию смерти
+        // Удаляем игрока с картошкой из списка выживших
+        survivingPlayers.remove(currentPotatoHolder);
         currentPotatoHolder.setGameMode(GameMode.SPECTATOR);
-        currentPotatoHolder.teleport(deathLocation);
-        currentPotatoHolder.sendMessage(ChatColor.RED + "Вы проиграли этот раунд!");
 
-        // Найти и перевести близких игроков в режим спектатора
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            if (!player.equals(currentPotatoHolder) &&
-                    player.getGameMode() != GameMode.SPECTATOR &&
-                    player.getLocation().distance(currentPotatoHolder.getLocation()) <= NEARBY_RANGE) {
+        // Список игроков, которые выбыли в этом раунде
+        List<Player> eliminatedThisRound = new ArrayList<>();
+        eliminatedThisRound.add(currentPotatoHolder);
 
-                // Отключаем свечение для игроков рядом
-                player.setGlowing(false);
-                if (potatoHolderTeam.hasEntry(player.getName())) {
-                    potatoHolderTeam.removeEntry(player.getName());
-                }
-                if (survivingPlayersTeam.hasEntry(player.getName())) {
-                    survivingPlayersTeam.removeEntry(player.getName());
-                }
-
-                player.setGameMode(GameMode.SPECTATOR);
-                player.teleport(deathLocation);
-                player.sendMessage(ChatColor.RED + "Вы были слишком близко к взрыву картошки!");
-                Bukkit.broadcastMessage(ChatColor.YELLOW + player.getName() +
-                        " был поблизости и тоже выбывает из игры!");
+        // Проверяем игроков в радиусе 5 блоков
+        for (Player nearbyPlayer : currentPotatoHolder.getWorld().getPlayers()) {
+            if (nearbyPlayer != currentPotatoHolder && 
+                nearbyPlayer.getLocation().distance(currentPotatoHolder.getLocation()) <= 5) {
+                
+                // Воспроизводим звук TNT для каждого задетого игрока
+                nearbyPlayer.playSound(nearbyPlayer.getLocation(), 
+                    Sound.ENTITY_TNT_PRIMED, 1.0f, 1.0f);
+                
+                // Создаем взрыв без урона и отбрасывания
+                nearbyPlayer.getWorld().createExplosion(
+                    nearbyPlayer.getLocation(), 
+                    4.0f,
+                    false,
+                    false,
+                    null
+                );
+                
+                // Удаляем игрока из списка выживших
+                survivingPlayers.remove(nearbyPlayer);
+                eliminatedThisRound.add(nearbyPlayer);
+                
+                // Очищаем инвентарь и эффекты задетого игрока
+                nearbyPlayer.getInventory().clear();
+                nearbyPlayer.removePotionEffect(PotionEffectType.SPEED);
+                nearbyPlayer.removePotionEffect(PotionEffectType.JUMP_BOOST);
+                
+                // Переводим в режим наблюдателя
+                nearbyPlayer.setGameMode(GameMode.SPECTATOR);
+                
+                Bukkit.broadcastMessage(ChatColor.DARK_RED + nearbyPlayer.getName() + 
+                    ChatColor.RED + " был задет взрывом и выбыл из игры!");
             }
         }
+        
+        Bukkit.broadcastMessage(ChatColor.DARK_RED + "Время вышло! " + 
+            ChatColor.RED + currentPotatoHolder.getName() + 
+            ChatColor.DARK_RED + " взорвался с горячей картошкой!");
 
-        // Удалить картошку
-        removePotato(currentPotatoHolder);
-
-        // Проверить, остались ли игроки
-        List<Player> survivingPlayers = getSurvivingPlayers();
-
-        if (survivingPlayers.size() <= 1) {
-            if (survivingPlayers.size() == 1) {
-                // Объявить победителя
-                Player winner = survivingPlayers.get(0);
-                announceWinner(winner);
-            } else {
-                Bukkit.broadcastMessage(ChatColor.GOLD + "═══════════════════════════════════");
-                Bukkit.broadcastMessage(ChatColor.GOLD + "➤ Игра окончена! Нет победителей.");
-                Bukkit.broadcastMessage(ChatColor.GOLD + "═══════════════════════════════════");
+        // Проверяем, остались ли выжившие
+        if (survivingPlayers.isEmpty()) {
+            gameActive = false;
+            Bukkit.broadcastMessage(ChatColor.GOLD + "═══════════════════════════════════");
+            Bukkit.broadcastMessage(ChatColor.YELLOW + "      ⭐ НИЧЬЯ! ⭐");
+            Bukkit.broadcastMessage(ChatColor.GOLD + "➤ Все игроки выбыли одновременно!");
+            Bukkit.broadcastMessage(ChatColor.GOLD + "═══════════════════════════════════");
+            
+            // Воспроизводим звук ничьей
+            for (Player player : Bukkit.getOnlinePlayers()) {
+                player.playSound(player.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1.0f, 1.0f);
             }
+            return;
+        }
+
+        // Проверяем, остался ли один игрок
+        if (survivingPlayers.size() == 1) {
+            winner = survivingPlayers.get(0);
             stopGame();
-        } else {
-            // Начать новый раунд
-            Bukkit.broadcastMessage(ChatColor.YELLOW + "Следующий раунд начнется через 5 секунд!");
-            Bukkit.broadcastMessage(ChatColor.YELLOW + "Осталось игроков: " + survivingPlayers.size() + "/" + initialPlayers.size());
-
-            new BukkitRunnable() {
-                @Override
-                public void run() {
-                    if (gameActive) {
-                        startRound();
-                    }
-                }
-            }.runTaskLater(this, 5 * 20L);
+            return;
         }
+
+        // Начинаем следующий раунд
+        Bukkit.getScheduler().runTaskLater(this, this::startRound, 100L);
     }
 
     private void announceWinner(Player winner) {
-        // Яркое объявление победителя в чате
-        Bukkit.broadcastMessage(ChatColor.GOLD + "═══════════════════════════════════");
-        Bukkit.broadcastMessage(ChatColor.GOLD + "      ⭐ ПОБЕДИТЕЛЬ! ⭐");
-        Bukkit.broadcastMessage(ChatColor.GOLD + "➤ " + ChatColor.GREEN + winner.getName() + ChatColor.GOLD + " выиграл игру 'Горячая картошка'!");
-        Bukkit.broadcastMessage(ChatColor.GOLD + "➤ Выжил последним из " + initialPlayers.size() + " игроков!");
-        Bukkit.broadcastMessage(ChatColor.GOLD + "═══════════════════════════════════");
-
-        // Сделать эффектный титул для победителя
-        winner.sendTitle(
-                ChatColor.GOLD + "ПОБЕДА!",
-                ChatColor.YELLOW + "Вы последний выживший!",
-                10, 70, 20
-        );
-
-        // Сделать титул для всех игроков
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            if (player != winner) {
-                player.sendTitle(
-                        ChatColor.GOLD + "ИГРА ОКОНЧЕНА",
-                        ChatColor.GREEN + "Победитель: " + winner.getName(),
-                        10, 70, 20
-                );
-            }
-        }
+        // Отправляем сообщение о победителе в чат
+        Bukkit.broadcastMessage(ChatColor.GOLD + "ИГРА ОКОНЧЕНА! " + 
+                ChatColor.GREEN + "Победитель: " + winner.getName());
 
         // Запустить фейерверки вокруг победителя
         launchFireworks(winner);
@@ -506,17 +544,24 @@ public class HotPotato extends JavaPlugin implements Listener {
         // Создать "горячую картошку"
         ItemStack hotPotato = new ItemStack(Material.BAKED_POTATO);
         ItemMeta meta = hotPotato.getItemMeta();
-        meta.setDisplayName(ChatColor.RED + "Горячая картошка");
+        meta.setDisplayName(ChatColor.DARK_RED + "Горячая картошка");
         List<String> lore = new ArrayList<>();
-        lore.add(ChatColor.YELLOW + "Передай эту картошку другому игроку!");
+        lore.add(ChatColor.GOLD + "Передай эту картошку другому игроку!");
         lore.add(ChatColor.RED + "У тебя " + secondsLeft + " секунд!");
         meta.setLore(lore);
         hotPotato.setItemMeta(meta);
 
         // Дать картошку игроку
         player.getInventory().setItem(0, hotPotato);
-        player.sendMessage(ChatColor.RED + "Вам дали горячую картошку! У вас " +
-                secondsLeft + " секунд, чтобы передать её!");
+        
+        // Добавляем эффекты скорости и высокого прыжка
+        player.addPotionEffect(new PotionEffect(PotionEffectType.SPEED, Integer.MAX_VALUE, 1, false, false));
+        player.addPotionEffect(new PotionEffect(PotionEffectType.JUMP_BOOST, Integer.MAX_VALUE, 1, false, false));
+        
+        // Воспроизводим звук получения картошки
+        player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_LAND, 1.0f, 1.0f);
+        player.sendMessage(ChatColor.DARK_RED + "Вам дали горячую картошку! У вас " +
+                ChatColor.RED + secondsLeft + ChatColor.DARK_RED + " секунд, чтобы передать её!");
     }
 
     private void removePotato(Player player) {
@@ -527,6 +572,10 @@ public class HotPotato extends JavaPlugin implements Listener {
                 player.getInventory().setItem(i, null);
             }
         }
+        
+        // Удаляем эффекты скорости и высокого прыжка
+        player.removePotionEffect(PotionEffectType.SPEED);
+        player.removePotionEffect(PotionEffectType.JUMP_BOOST);
     }
 
     @EventHandler
@@ -537,42 +586,113 @@ public class HotPotato extends JavaPlugin implements Listener {
 
         Player player = event.getPlayer();
 
-        // Проверить, является ли игрок текущим держателем картошки
         if (player.equals(currentPotatoHolder)) {
-            // Проверить, является ли цель игроком
             if (event.getRightClicked() instanceof Player) {
                 Player target = (Player) event.getRightClicked();
 
-                // Убедиться, что цель не в режиме наблюдателя
                 if (target.getGameMode() != GameMode.SPECTATOR) {
-                    // Отключить свечение у текущего игрока
                     player.setGlowing(false);
                     if (potatoHolderTeam.hasEntry(player.getName())) {
                         potatoHolderTeam.removeEntry(player.getName());
                     }
+                    survivingPlayersTeam.addEntry(player.getName());
+                    player.setGlowing(true);
 
-                    // Передать картошку
                     removePotato(player);
                     currentPotatoHolder = target;
                     givePotato(target);
 
-                    // Установить свечение для нового держателя картошки
                     setGlowingEffect(target);
 
+                    // Отправляем сообщение в чат только о передаче картошки
                     Bukkit.broadcastMessage(ChatColor.YELLOW + player.getName() +
                             " передал горячую картошку игроку " + target.getName() + "!");
-
-                    // Уведомить всех игроков о новом держателе картошки
-                    for (Player p : Bukkit.getOnlinePlayers()) {
-                        p.sendTitle(
-                                ChatColor.YELLOW + "Картошка у " + target.getName(),
-                                ChatColor.YELLOW + "Осталось: " + secondsLeft + " сек",
-                                5, 20, 5
-                        );
-                    }
                 }
             }
         }
+    }
+
+    @EventHandler
+    public void onPlayerDropItem(PlayerDropItemEvent event) {
+        if (!gameActive) return;
+        
+        ItemStack droppedItem = event.getItemDrop().getItemStack();
+        if (droppedItem.getType() == Material.BAKED_POTATO) {
+            event.setCancelled(true);
+            // Воспроизводим звук ошибки
+            event.getPlayer().playSound(event.getPlayer().getLocation(), 
+                Sound.BLOCK_NOTE_BLOCK_BASS, 1.0f, 1.0f);
+            event.getPlayer().sendMessage(ChatColor.RED + "Нельзя выкидывать горячую картошку!");
+        }
+    }
+
+    public void startFastGame() {
+        if (gameActive) {
+            return;
+        }
+
+        List<Player> players = new ArrayList<>(Bukkit.getOnlinePlayers());
+        if (players.size() < 2) {
+            Bukkit.broadcastMessage(ChatColor.RED + "Нужно как минимум 2 игрока для начала игры!");
+            return;
+        }
+
+        if (gameStartLocation == null) {
+            Bukkit.broadcastMessage(ChatColor.RED + "Стартовая локация не установлена! Используйте /hotpotato setstart");
+            return;
+        }
+
+        if (deathLocation == null) {
+            Bukkit.broadcastMessage(ChatColor.RED + "Локация для проигравших не установлена! Используйте /hotpotato setdeath");
+            return;
+        }
+
+        // Сохраняем изначальное количество игроков
+        initialPlayers = new ArrayList<>(players);
+        initialPlayerCount = players.size();
+        survivingPlayers = new ArrayList<>(players);
+
+        // Телепортировать всех игроков на стартовую позицию
+        for (Player player : players) {
+            player.getInventory().clear();
+            player.teleport(gameStartLocation);
+            player.setGameMode(GameMode.ADVENTURE);
+            player.setGlowing(false);
+            player.setHealth(20.0);
+            player.setFoodLevel(20);
+            player.setSaturation(20.0f);
+            player.addPotionEffect(new PotionEffect(PotionEffectType.NIGHT_VISION, Integer.MAX_VALUE, 0, false, false));
+            player.addPotionEffect(new PotionEffect(PotionEffectType.SATURATION, Integer.MAX_VALUE, 0, false, false));
+            player.addPotionEffect(new PotionEffect(PotionEffectType.REGENERATION, Integer.MAX_VALUE, 0, false, false));
+            player.setNoDamageTicks(Integer.MAX_VALUE);
+            player.setScoreboard(scoreboard);
+            survivingPlayersTeam.addEntry(player.getName());
+        }
+
+        Bukkit.getWorlds().forEach(world -> world.setPVP(false));
+
+        gameActive = true;
+        roundCount = 0;
+        secondsLeft = 5; // Уменьшенное время для тестирования
+
+        // Быстрый обратный отсчет (3 секунды)
+        Bukkit.broadcastMessage(ChatColor.GREEN + "Быстрая игра 'Горячая картошка' начнется через 3 секунды!");
+        Bukkit.broadcastMessage(ChatColor.YELLOW + "Всего игроков: " + initialPlayers.size());
+
+        new BukkitRunnable() {
+            int countdown = 3;
+
+            @Override
+            public void run() {
+                if (countdown <= 0) {
+                    startRound();
+                    cancel();
+                } else {
+                    Bukkit.broadcastMessage(ChatColor.YELLOW + "Игра начнется через " + countdown + " секунд!");
+                    countdown--;
+                }
+            }
+        }.runTaskTimer(this, 0L, 20L);
     }
 }
 
@@ -588,7 +708,7 @@ class HotPotatoCommand implements org.bukkit.command.CommandExecutor {
     @Override
     public boolean onCommand(org.bukkit.command.CommandSender sender, org.bukkit.command.Command command, String label, String[] args) {
         if (args.length < 1) {
-            sender.sendMessage(ChatColor.RED + "Использование: /hotpotato <start|stop|setstart|setdeath>");
+            sender.sendMessage(ChatColor.RED + "Использование: /hotpotato <start|stop|setstart|setdeath|fast>");
             return false;
         }
 
@@ -614,8 +734,15 @@ class HotPotatoCommand implements org.bukkit.command.CommandExecutor {
             Player player = (Player) sender;
             plugin.setDeathLocation(player.getLocation());
             return true;
+        } else if (args[0].equalsIgnoreCase("fast")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage(ChatColor.RED + "Эта команда только для игроков!");
+                return true;
+            }
+            plugin.startFastGame();
+            return true;
         } else {
-            sender.sendMessage(ChatColor.RED + "Использование: /hotpotato <start|stop|setstart|setdeath>");
+            sender.sendMessage(ChatColor.RED + "Использование: /hotpotato <start|stop|setstart|setdeath|fast>");
             return false;
         }
     }

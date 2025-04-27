@@ -20,6 +20,8 @@ import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.scoreboard.Scoreboard;
 import org.bukkit.scoreboard.Team;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -40,6 +42,7 @@ public class HotPotato extends JavaPlugin implements Listener {
 
     private Scoreboard scoreboard;
     private Team potatoHolderTeam;
+    private Team survivingPlayersTeam;
 
     @Override
     public void onEnable() {
@@ -66,18 +69,27 @@ public class HotPotato extends JavaPlugin implements Listener {
         potatoHolderTeam.setAllowFriendlyFire(true);
         potatoHolderTeam.setCanSeeFriendlyInvisibles(false);
 
+        // Создаем команду для выживших (зеленое свечение)
+        survivingPlayersTeam = scoreboard.registerNewTeam("survivors");
+        survivingPlayersTeam.setColor(ChatColor.GREEN);
+        survivingPlayersTeam.setAllowFriendlyFire(false);
+        survivingPlayersTeam.setCanSeeFriendlyInvisibles(false);
+
         // Устанавливаем опцию свечения и цвет свечения
         potatoHolderTeam.setOption(Team.Option.NAME_TAG_VISIBILITY, Team.OptionStatus.ALWAYS);
+        survivingPlayersTeam.setOption(Team.Option.NAME_TAG_VISIBILITY, Team.OptionStatus.ALWAYS);
         try {
             // В новых версиях Minecraft (1.9+)
             potatoHolderTeam.setOption(Team.Option.COLLISION_RULE, Team.OptionStatus.ALWAYS);
+            survivingPlayersTeam.setOption(Team.Option.COLLISION_RULE, Team.OptionStatus.ALWAYS);
         } catch (Exception e) {
             // Игнорируем ошибки в старых версиях
         }
 
         try {
-            // Задаем красное свечение
+            // Задаем цвета свечения
             potatoHolderTeam.setColor(ChatColor.RED);
+            survivingPlayersTeam.setColor(ChatColor.GREEN);
         } catch (Exception e) {
             // В случае, если метод не поддерживается в данной версии
             getLogger().warning("Не удалось установить цвет свечения. Возможно, версия сервера не поддерживает эту функцию.");
@@ -175,11 +187,13 @@ public class HotPotato extends JavaPlugin implements Listener {
         // Телепортировать всех игроков на стартовую позицию
         for (Player player : players) {
             player.teleport(gameStartLocation);
-            player.setGameMode(GameMode.SURVIVAL);
-            player.setGlowing(false); // Убираем свечение со всех игроков при старте
-
-            // Устанавливаем скорборд для всех игроков
+            player.setGameMode(GameMode.ADVENTURE);
+            player.setGlowing(false);
+            player.setHealth(20.0);
+            player.setFoodLevel(20);
+            player.addPotionEffect(new PotionEffect(PotionEffectType.NIGHT_VISION, Integer.MAX_VALUE, 0, false, false));
             player.setScoreboard(scoreboard);
+            survivingPlayersTeam.addEntry(player.getName());
         }
 
         gameActive = true;
@@ -209,6 +223,7 @@ public class HotPotato extends JavaPlugin implements Listener {
                                     ChatColor.GOLD + "Подготовка",
                                     ChatColor.YELLOW + "Старт через " + countdown + " сек",
                                     5, 10, 5
+                                    
                             );
                         }
                     }
@@ -300,16 +315,21 @@ public class HotPotato extends JavaPlugin implements Listener {
         // Удалить картошку у текущего держателя
         if (currentPotatoHolder != null) {
             removePotato(currentPotatoHolder);
+        }
 
-            // Отключаем свечение у всех
-            for (Player player : Bukkit.getOnlinePlayers()) {
-                player.setGlowing(false);
-            }
+        // Очищаем команды
+        for (String entry : potatoHolderTeam.getEntries()) {
+            potatoHolderTeam.removeEntry(entry);
+        }
+        for (String entry : survivingPlayersTeam.getEntries()) {
+            survivingPlayersTeam.removeEntry(entry);
+        }
 
-            // Очищаем команду свечения
-            for (String entry : potatoHolderTeam.getEntries()) {
-                potatoHolderTeam.removeEntry(entry);
-            }
+        // Сбрасываем эффекты у всех игроков
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            player.setGlowing(false);
+            player.removePotionEffect(PotionEffectType.NIGHT_VISION);
+            player.setGameMode(GameMode.SURVIVAL);
         }
 
         gameActive = false;
@@ -329,7 +349,7 @@ public class HotPotato extends JavaPlugin implements Listener {
         // Взрыв (только визуальный эффект)
         currentPotatoHolder.getWorld().createExplosion(
                 currentPotatoHolder.getLocation(),
-                0.0F, // мощность 0 - только эффект
+                0.0F,
                 false,
                 false
         );
@@ -338,6 +358,9 @@ public class HotPotato extends JavaPlugin implements Listener {
         currentPotatoHolder.setGlowing(false);
         if (potatoHolderTeam.hasEntry(currentPotatoHolder.getName())) {
             potatoHolderTeam.removeEntry(currentPotatoHolder.getName());
+        }
+        if (survivingPlayersTeam.hasEntry(currentPotatoHolder.getName())) {
+            survivingPlayersTeam.removeEntry(currentPotatoHolder.getName());
         }
 
         // Перевести проигравшего в спектатор и телепортировать на локацию смерти
@@ -355,6 +378,9 @@ public class HotPotato extends JavaPlugin implements Listener {
                 player.setGlowing(false);
                 if (potatoHolderTeam.hasEntry(player.getName())) {
                     potatoHolderTeam.removeEntry(player.getName());
+                }
+                if (survivingPlayersTeam.hasEntry(player.getName())) {
+                    survivingPlayersTeam.removeEntry(player.getName());
                 }
 
                 player.setGameMode(GameMode.SPECTATOR);
